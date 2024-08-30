@@ -53,7 +53,7 @@ Aug 29 05:50:28 master systemd[1]: Started MySQL Server.
 ```
 Те же действия выполняем на slave.
 
-При установке Percona автоматически генерирует паролþ для полþзователя root и кладет его в файл /var/log/mysqld.log:
+При установке Percona автоматически генерирует пароль для пользователя root и кладет его в файл /var/log/mysqld.log:
 ```
 [root@master ~]# cat /var/log/mysqld.log | grep 'root@localhost:' | awk '{print $11}'
 jr%#OgIpv5C;
