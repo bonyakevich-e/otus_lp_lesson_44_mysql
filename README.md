@@ -52,3 +52,128 @@ Aug 29 05:50:25 master systemd[1]: Starting MySQL Server...
 Aug 29 05:50:28 master systemd[1]: Started MySQL Server.
 ```
 Те же действия выполняем на slave.
+
+При установке Percona автоматически генерирует паролþ для полþзователя root и кладет его в файл /var/log/mysqld.log:
+```
+[root@master ~]# cat /var/log/mysqld.log | grep 'root@localhost:' | awk '{print $11}'
+jr%#OgIpv5C;
+```
+Меняем пароль:
+```
+[root@master ~]# mysql -uroot -p'jr%#OgIpv5C;'
+mysql> ALTER USER USER() IDENTIFIED BY 'R6S4#21#.3@31Fsd';
+```
+Репликацию будем настраивать с использованием __GTID__. GTID представляет собой уникальный 128-битный глобальный идентификационный номер (SERVER_UUID), который увеличивается с каждой новой транзакцией.
+
+Следует обратить внимание, что атрибут server-id на мастер-сервере должен обязательно отличаться от server-id слейв-сервера. Проверить какая переменная установлена на текущий момент можно следующим образом:
+mysql> SELECT @@server_id;
++-------------+
+| @@server_id |
++-------------+
+|           1 |
++-------------+
+1 row in set (0.00 sec)
+
+Параметр __server-id__ у нас прописан в конфигурационном файле __etc/my.cnf.d/01-base.cnf__. Соответственно на slave его нужно изменить и перезагрузить mysql. 
+
+Убеждаемся что GTID включён:
+```
+mysql> SHOW VARIABLES LIKE 'gtid_mode';
++---------------+-------+
+| Variable_name | Value |
++---------------+-------+
+| gtid_mode     | ON    |
++---------------+-------+
+1 row in set (0.01 sec)
+```
+Создадим тестовую базу __bet__ на master'е, загрузим в нее дамп и проверим:
+```
+mysql> CREATE DATABASE bet;
+Query OK, 1 row affected (0.00 sec)
+```
+```
+[root@slave ~]# mysql -uroot -p -D bet < /vagrant/bet.dmp
+Enter password:
+```
+```
+mysql> USE bet;
+Reading table information for completion of table and column names
+You can turn off this feature to get a quicker startup with -A
+
+Database changed
+mysql> SHOW TABLES;
++------------------+
+| Tables_in_bet    |
++------------------+
+| bookmaker        |
+| competition      |
+| events_on_demand |
+| market           |
+| odds             |
+| outcome          |
+| v_same_event     |
++------------------+
+7 rows in set (0.00 sec)
+```
+Создадим пользователя для репликации и дадим ему права на эту самую репликацию:
+```
+mysql> CREATE USER 'repl'@'%' IDENTIFIED BY '!OtusLinux2024';
+Query OK, 0 rows affected (0.00 sec)
+mysql> SELECT user,host FROM mysql.user where user='repl';
++------+------+
+| user | host |
++------+------+
+| repl | %    |
++------+------+
+1 row in set (0.00 sec)
+mysql> GRANT REPLICATION SLAVE ON *.* TO 'repl'@'%' IDENTIFIED BY '!OtusLinux2024';
+Query OK, 0 rows affected, 1 warning (0.00 sec)
+```
+Дампим базу для последующего залива на slave и игнорируем таблицы по заданию:
+```
+[root@master ~]# mysqldump --all-databases --triggers --routines --master-data --ignore-table=bet.events_on_demand --ignore-table=bet.v_same_event -uroot -p > master.sql
+Enter password: 
+Warning: A partial dump from a server that has GTIDs will by default include the GTIDs of all transactions, even those that changed suppressed parts of the database. If you don't want to restore GTIDs, pass --set-gtid-purged=OFF. To make a complete dump, pass --all-databases --triggers --routines --events.
+```
+```
+[root@master ~]# cp master.sql /vagrant/
+```
+На слейве раскомментируем в /etc/my.cnf.d/05-binlog.cnf строки:
+```
+#replicate-ignore-table=bet.events_on_demand
+#replicate-ignore-table=bet.v_same_event
+```
+Таким образом указываем таблицы которые будут игнорироваться при репликации.
+
+Заливаем на слейв дамп мастера и убеждаемся что база есть и она без лишних таблиц:
+```
+mysql> SOURCE /mnt/master.sql
+mysql> SHOW DATABASES LIKE 'bet';
++----------------+
+| Database (bet) |
++----------------+
+| bet            |
++----------------+
+1 row in set (0.00 sec)
+mysql> USE bet;
+Database changed
+mysql> SHOW TABLES;
++---------------+
+| Tables_in_bet |
++---------------+
+| bookmaker     |
+| competition   |
+| market        |
+| odds          |
+| outcome       |
++---------------+
+5 rows in set (0.00 sec)
+```
+Видим что таблиц v_same_event и events_on_demand нет.
+
+Подключаем и запускаем slave:
+```
+mysql> CHANGE MASTER TO MASTER_HOST = "192.168.56.10", MASTER_PORT = 3306, MASTER_USER = "repl", MASTER_PASSWORD = "!OtusLinux2024", MASTER_AUTO_POSITION = 1;
+Query OK, 0 rows affected, 2 warnings (0.00 sec)
+mysql> START SLAVE;
+Query OK, 0 rows affected (0.00 sec)
